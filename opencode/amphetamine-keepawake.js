@@ -1,0 +1,327 @@
+// Keeps an Amphetamine session running while any OpenCode session is working, so agents carry on with the lid closed.
+// Setup guide: see the README in the keep-agents-awake repo.
+// Log: ~/Library/Logs/opencode-amphetamine.log  To turn it off: delete this file.
+import { execFile, spawn } from "node:child_process"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
+
+const TICK_MS = 15_000
+const GRACE_MS = 3 * 60_000 // Stay awake this long after the last session stops, so turns don't flap the session.
+const WAITING_CAP_MS = 30 * 60_000 // A prompt waiting for you keeps the Mac awake this long at most.
+const BACKGROUND_COMMAND_CAP_MS = 2 * 60 * 60_000 // Beyond this, a background command is probably a dev server.
+const MIN_BATTERY_PERCENT = 20
+const SESSION_HOURS = 24 // Amphetamine ends the session itself by then, even if everything here has died.
+const SETTLE_MS = 10_000 // Amphetamine changes SleepDisabled a few seconds after a session starts or ends.
+const MAX_API_FAILURES = 8
+
+const LOG_FILE = join(homedir(), "Library/Logs/opencode-amphetamine.log")
+// While this file exists, the running Amphetamine session is ours to end.
+const HOLD_FILE = join(homedir(), ".local/state/opencode-amphetamine/hold.json")
+
+// macOS only sleeps at the moment the lid closes, so a Mac whose work ends later stays awake unless told to sleep.
+// Skipped when an external display is in use, because then the closed lid is deliberate.
+const SLEEP_IF_LID_CLOSED = `
+case "$(/usr/sbin/ioreg -r -k AppleClamshellState -d 1)" in
+  *'"AppleClamshellState" = Yes'*) ;;
+  *) exit 0 ;;
+esac
+displays=$(/usr/sbin/system_profiler SPDisplaysDataType)
+[ -n "$displays" ] || exit 0
+shown=$(printf '%s\\n' "$displays" | /usr/bin/grep -c 'Resolution:')
+internal=$(printf '%s\\n' "$displays" | /usr/bin/grep -c 'Connection Type: Internal')
+[ "$shown" -gt "$internal" ] && exit 0
+exec /usr/bin/pmset sleepnow
+`
+
+// One server hosts one plugin instance per project, so every instance shares this state and a single timer.
+const KEY = Symbol.for("opencode.amphetamine-keepawake")
+const S = (globalThis[KEY] ??= {
+  instances: new Set(),
+  timer: undefined,
+  unloadTimer: undefined,
+  ticking: false,
+  holding: false,
+  owned: false,
+  startedAt: 0,
+  lastWanted: 0,
+  lastSessionEvent: Date.now(),
+  failures: 0,
+  lastReason: "",
+})
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function log(message) {
+  try {
+    mkdirSync(dirname(LOG_FILE), { recursive: true })
+    appendFileSync(LOG_FILE, `${new Date().toISOString()} ${message}\n`)
+  } catch {
+    // Logging must never stop the plugin.
+  }
+}
+
+// Logs a reason for not holding only when it changes, not on every tick.
+function logOnce(reason) {
+  if (reason !== S.lastReason) log(reason)
+  S.lastReason = reason
+}
+
+const run = (file, args, timeout = 10_000) =>
+  new Promise((resolve) => {
+    execFile(file, args, { timeout }, (error, stdout) =>
+      resolve({ ok: !error, out: String(stdout ?? "").trim(), error: error?.message }),
+    )
+  })
+
+const amphetamine = (command) => run("/usr/bin/osascript", ["-e", `tell application "Amphetamine" to ${command}`])
+const setSleepDisabled = (value) => run("/usr/bin/sudo", ["-n", "/usr/bin/pmset", "-a", "disablesleep", value])
+
+async function sleepDisabled() {
+  return /SleepDisabled\s+1/.test((await run("/usr/bin/pmset", ["-g"])).out)
+}
+
+async function battery() {
+  const { out } = await run("/usr/bin/pmset", ["-g", "batt"])
+  return { percent: Number(/(\d+)%/.exec(out)?.[1] ?? 100), discharging: /Battery Power/.test(out) }
+}
+
+// The plugin context has no active-session list and no forms, so this goes through `opencode api`, using the binary
+// that's running this server. It keeps working when an OpenCode update changes that binary's path.
+async function api(path) {
+  const result = await run(process.execPath, ["api", "get", path])
+  if (!result.ok) throw new Error(result.error)
+  return JSON.parse(result.out).data
+}
+
+async function activeSessions() {
+  try {
+    const sessions = Object.keys(await api("/api/session/active"))
+    S.failures = 0
+    return sessions
+  } catch (error) {
+    S.failures += 1
+    if (S.failures === 1) log(`could not list active sessions: ${error?.message ?? error}`)
+    return S.failures >= MAX_API_FAILURES ? [] : undefined
+  }
+}
+
+// A session leaves the active list when its turn ends, even if a command it started in the background is still
+// running. The list of running commands is per project, so this asks once for each project with the plugin loaded.
+async function backgroundCommands() {
+  const directories = new Set([...S.instances].map((ctx) => ctx.location?.directory).filter(Boolean))
+  const running = []
+  for (const directory of directories) {
+    const shells = await api(`/api/shell?location%5Bdirectory%5D=${encodeURIComponent(directory)}`).catch(() => [])
+    running.push(
+      ...shells.filter(
+        (shell) => shell.metadata?.sessionID && Date.now() - shell.time.started < BACKGROUND_COMMAND_CAP_MS,
+      ),
+    )
+  }
+  return running
+}
+
+// The active list says "running" even when an agent is only waiting for your reply. So a session counts as stuck
+// when a prompt is pending and no session has produced anything for WAITING_CAP_MS. A long test run has no prompt
+// pending, so it never counts as stuck.
+async function stuckOnPrompt(ids) {
+  if (Date.now() - S.lastSessionEvent < WAITING_CAP_MS) return false
+  for (const id of ids) {
+    for (const path of [`/api/session/${id}/permission`, `/api/session/${id}/form`]) {
+      const pending = await api(path).catch(() => [])
+      if (pending.length) return true
+    }
+  }
+  return false
+}
+
+function readHold() {
+  try {
+    return JSON.parse(readFileSync(HOLD_FILE, "utf8"))
+  } catch {
+    return undefined
+  }
+}
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// A separate process, so that a crashed server can't leave the Mac awake. It waits before acting so that a server
+// restart can take the session over instead.
+function startWatcher() {
+  const script = `
+while kill -0 ${process.pid} 2>/dev/null; do sleep 15; done
+sleep 45
+[ -f "$1" ] || exit 0
+/usr/bin/osascript -e 'tell application "Amphetamine" to end session'
+rm -f "$1"
+sleep 10
+${SLEEP_IF_LID_CLOSED}`
+  const watcher = spawn("/bin/sh", ["-c", script, "amphetamine-keepawake-watcher", HOLD_FILE], {
+    detached: true,
+    stdio: "ignore",
+  })
+  watcher.unref()
+  mkdirSync(dirname(HOLD_FILE), { recursive: true })
+  writeFileSync(HOLD_FILE, JSON.stringify({ serverPid: process.pid, watcherPid: watcher.pid }))
+}
+
+function stopWatcher() {
+  const hold = readHold()
+  if (hold?.watcherPid && isAlive(hold.watcherPid)) process.kill(hold.watcherPid)
+  rmSync(HOLD_FILE, { force: true })
+}
+
+// After a server restart the old watcher is still counting down, and the Amphetamine session is still ours.
+function adoptPriorHold() {
+  const hold = readHold()
+  if (!hold || hold.serverPid === process.pid) return
+  if (!isAlive(hold.watcherPid)) return rmSync(HOLD_FILE, { force: true })
+  stopWatcher()
+  Object.assign(S, { holding: true, owned: true, startedAt: Date.now(), lastWanted: Date.now() })
+  startWatcher()
+  log("took over the Amphetamine session from the previous OpenCode server")
+}
+
+async function keepSleepDisabled() {
+  if (Date.now() - S.startedAt < SETTLE_MS || (await sleepDisabled())) return
+  // Respect "Allow system sleep when display is closed" if it's been turned back on.
+  if ((await amphetamine("closed display mode enabled")).out !== "true") {
+    return logOnce("Closed-Display Mode is off in Amphetamine, so the Mac will sleep when the lid closes")
+  }
+  const result = await setSleepDisabled("1")
+  log(result.ok ? "SleepDisabled had dropped to 0; set it back to 1" : `could not restore SleepDisabled: ${result.error}`)
+}
+
+async function hold() {
+  S.lastWanted = Date.now()
+  const session = await amphetamine("session is active")
+  if (!session.ok) return logOnce(`could not reach Amphetamine: ${session.error}`)
+
+  if (session.out === "true") {
+    if (!S.holding) {
+      Object.assign(S, { holding: true, owned: false, startedAt: Date.now() })
+      log("agents running; your own Amphetamine session is already active, so it will be left alone")
+    }
+    return keepSleepDisabled()
+  }
+
+  // Only reached with no session running. Starting one over a running session breaks Closed-Display Mode.
+  stopWatcher()
+  const started = await amphetamine(
+    `start new session with options {duration:${SESSION_HOURS}, interval:hours, displaySleepAllowed:true}`,
+  )
+  if (!started.ok) return logOnce(`could not start an Amphetamine session: ${started.error}`)
+  Object.assign(S, { holding: true, owned: true, startedAt: Date.now(), lastReason: "" })
+  startWatcher()
+  log("agents running; started an Amphetamine session")
+}
+
+async function release(reason) {
+  S.holding = false
+  if (!S.owned) return log(`agents stopped (${reason}); your own Amphetamine session was left running`)
+  S.owned = false
+  stopWatcher()
+  await amphetamine("end session")
+  log(`ended the Amphetamine session (${reason})`)
+
+  await delay(SETTLE_MS)
+  if ((await amphetamine("session is active")).out === "true") return
+  if (await sleepDisabled()) {
+    const result = await setSleepDisabled("0")
+    log(result.ok ? "SleepDisabled was left at 1; set it to 0" : `could not clear SleepDisabled: ${result.error}`)
+  }
+  if ((await activeSessions())?.length || (await backgroundCommands()).length) return
+  const slept = await run("/bin/sh", ["-c", SLEEP_IF_LID_CLOSED], 30_000)
+  if (!slept.ok) log(`could not put the Mac to sleep: ${slept.error}`)
+}
+
+async function tick() {
+  if (S.ticking) return
+  S.ticking = true
+  try {
+    const active = await activeSessions()
+    if (active === undefined) return
+
+    const background = await backgroundCommands()
+    const working = active.length > 0 || background.length > 0
+
+    let reason = working ? "" : "no active sessions"
+    if (working) {
+      const power = await battery()
+      if (power.discharging && power.percent <= MIN_BATTERY_PERCENT) reason = `battery at ${power.percent}%`
+      else if (!background.length && (await stuckOnPrompt(active))) reason = "only waiting for your reply"
+    }
+
+    if (!reason) return await hold()
+    if (working) logOnce(`not keeping the Mac awake: ${reason}`)
+    if (!S.holding) return
+    if (reason.startsWith("battery") || Date.now() - S.lastWanted >= GRACE_MS) await release(reason)
+  } catch (error) {
+    log(`tick failed: ${error?.message ?? error}`)
+  } finally {
+    S.ticking = false
+  }
+}
+
+function listen(ctx, signal) {
+  void (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal })) {
+        if (!event.type?.startsWith("session.")) continue
+        S.lastSessionEvent = Date.now()
+        // Start at once, so closing the lid right after sending a prompt is safe.
+        if (event.type === "session.execution.started") void tick()
+      }
+    } catch (error) {
+      if (!signal.aborted) log(`event stream stopped: ${error?.message ?? error}`)
+    }
+  })()
+}
+
+export default {
+  id: "amphetamine-keepawake",
+  setup(ctx) {
+    if (process.platform !== "darwin") return
+    if (!existsSync("/Applications/Amphetamine.app")) return log("Amphetamine is not installed, so doing nothing")
+
+    clearTimeout(S.unloadTimer)
+    S.instances.add(ctx)
+    const controller = new AbortController()
+    try {
+      if (statSync(LOG_FILE, { throwIfNoEntry: false })?.size > 512_000) writeFileSync(LOG_FILE, "")
+      if (S.instances.size === 1) {
+        adoptPriorHold()
+        log(`loaded in OpenCode ${ctx.app?.version ?? "unknown"} (server ${process.pid})`)
+      }
+      // Replaced on every load: a reload adds the new instance before removing the old one, and an old timer would
+      // keep running the old code.
+      clearInterval(S.timer)
+      S.timer = setInterval(() => void tick(), TICK_MS)
+      listen(ctx, controller.signal)
+      void tick()
+    } catch (error) {
+      log(`setup failed: ${error?.message ?? error}`)
+    }
+
+    return () => {
+      controller.abort()
+      S.instances.delete(ctx)
+      if (S.instances.size) return
+      clearInterval(S.timer)
+      S.timer = undefined
+      // A reload loads the plugin again straight away. If nothing does, the plugin was removed, so let go.
+      S.unloadTimer = setTimeout(() => {
+        if (S.holding) void release("plugin removed")
+      }, 30_000)
+      S.unloadTimer.unref?.()
+    }
+  },
+}
