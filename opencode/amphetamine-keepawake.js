@@ -13,9 +13,16 @@ const SESSION_HOURS = 24 // Amphetamine ends the session itself by then, even if
 const SETTLE_MS = 10_000 // Amphetamine changes SleepDisabled a few seconds after a session starts or ends.
 const MAX_API_FAILURES = 8
 
+const OTHER_AGENT_FRESH_MS = 60_000
+
 const LOG_FILE = join(homedir(), "Library/Logs/opencode-amphetamine.log")
-// While this file exists, the running Amphetamine session is ours to end.
+// Records the watcher process while agents are working.
 const HOLD_FILE = join(homedir(), ".local/state/opencode-amphetamine/hold.json")
+// Shared with the Claude Code setup, so neither switches Amphetamine off while the other is still working.
+const SHARED_DIR = join(homedir(), ".local/state/keep-agents-awake")
+const OWNED_FILE = join(SHARED_DIR, "owned") // Exists while the running Amphetamine session is one we started.
+const WORKING_FILE = join(SHARED_DIR, "opencode-working") // Touched on every check while agents are working.
+const CLAUDE_WORKING_FILE = join(SHARED_DIR, "claude-working")
 
 // macOS only sleeps at the moment the lid closes, so a Mac whose work ends later stays awake unless told to sleep.
 // Skipped when an external display is in use, because then the closed lid is deliberate.
@@ -40,7 +47,6 @@ const S = (globalThis[KEY] ??= {
   unloadTimer: undefined,
   ticking: false,
   holding: false,
-  owned: false,
   startedAt: 0,
   lastWanted: 0,
   failures: 0,
@@ -73,6 +79,11 @@ const run = (file, args, timeout = 10_000) =>
 
 const amphetamine = (command) => run("/usr/bin/osascript", ["-e", `tell application "Amphetamine" to ${command}`])
 const setSleepDisabled = (value) => run("/usr/bin/sudo", ["-n", "/usr/bin/pmset", "-a", "disablesleep", value])
+
+function claudeCodeIsWorking() {
+  const modified = statSync(CLAUDE_WORKING_FILE, { throwIfNoEntry: false })?.mtimeMs ?? 0
+  return Date.now() - modified < OTHER_AGENT_FRESH_MS
+}
 
 async function sleepDisabled() {
   return /SleepDisabled\s+1/.test((await run("/usr/bin/pmset", ["-g"])).out)
@@ -151,11 +162,15 @@ function startWatcher() {
 while kill -0 ${process.pid} 2>/dev/null; do sleep 15; done
 sleep 45
 [ -f "$1" ] || exit 0
+rm -f "$1" "$3"
+[ -f "$4" ] && [ $(($(date +%s) - $(/usr/bin/stat -f %m "$4"))) -lt ${OTHER_AGENT_FRESH_MS / 1000} ] && exit 0
+[ -f "$2" ] || exit 0
 /usr/bin/osascript -e 'tell application "Amphetamine" to end session'
-rm -f "$1"
+rm -f "$2"
 sleep 10
 ${SLEEP_IF_LID_CLOSED}`
-  const watcher = spawn("/bin/sh", ["-c", script, "amphetamine-keepawake-watcher", HOLD_FILE], {
+  const args = [HOLD_FILE, OWNED_FILE, WORKING_FILE, CLAUDE_WORKING_FILE]
+  const watcher = spawn("/bin/sh", ["-c", script, "amphetamine-keepawake-watcher", ...args], {
     detached: true,
     stdio: "ignore",
   })
@@ -170,13 +185,13 @@ function stopWatcher() {
   rmSync(HOLD_FILE, { force: true })
 }
 
-// After a server restart the old watcher is still counting down, and the Amphetamine session is still ours.
+// After a server restart the old watcher is still counting down, so this takes over from it.
 function adoptPriorHold() {
   const hold = readHold()
   if (!hold || hold.serverPid === process.pid) return
   if (!isAlive(hold.watcherPid)) return rmSync(HOLD_FILE, { force: true })
   stopWatcher()
-  Object.assign(S, { holding: true, owned: true, startedAt: Date.now(), lastWanted: Date.now() })
+  Object.assign(S, { holding: true, startedAt: Date.now(), lastWanted: Date.now() })
   startWatcher()
   log("took over the Amphetamine session from the previous OpenCode server")
 }
@@ -193,13 +208,15 @@ async function keepSleepDisabled() {
 
 async function hold() {
   S.lastWanted = Date.now()
+  writeFileSync(WORKING_FILE, "")
   const session = await amphetamine("session is active")
   if (!session.ok) return logOnce(`could not reach Amphetamine: ${session.error}`)
 
   if (session.out === "true") {
     if (!S.holding) {
-      Object.assign(S, { holding: true, owned: false, startedAt: Date.now() })
-      log("agents running; your own Amphetamine session is already active, so it will be left alone")
+      Object.assign(S, { holding: true, startedAt: Date.now() })
+      startWatcher()
+      log(`agents running; Amphetamine is already on${existsSync(OWNED_FILE) ? "" : " and yours, so it will be left alone"}`)
     }
     return keepSleepDisabled()
   }
@@ -210,17 +227,20 @@ async function hold() {
     `start new session with options {duration:${SESSION_HOURS}, interval:hours, displaySleepAllowed:true}`,
   )
   if (!started.ok) return logOnce(`could not start an Amphetamine session: ${started.error}`)
-  Object.assign(S, { holding: true, owned: true, startedAt: Date.now(), lastReason: "" })
+  writeFileSync(OWNED_FILE, "")
+  Object.assign(S, { holding: true, startedAt: Date.now(), lastReason: "" })
   startWatcher()
   log("agents running; started an Amphetamine session")
 }
 
 async function release(reason) {
   S.holding = false
-  if (!S.owned) return log(`agents stopped (${reason}); your own Amphetamine session was left running`)
-  S.owned = false
   stopWatcher()
+  rmSync(WORKING_FILE, { force: true })
+  if (claudeCodeIsWorking()) return log(`agents stopped (${reason}); Claude Code is still working, so Amphetamine stays on`)
+  if (!existsSync(OWNED_FILE)) return log(`agents stopped (${reason}); your own Amphetamine session was left running`)
   await amphetamine("end session")
+  rmSync(OWNED_FILE, { force: true })
   log(`ended the Amphetamine session (${reason})`)
 
   await delay(SETTLE_MS)
@@ -229,7 +249,7 @@ async function release(reason) {
     const result = await setSleepDisabled("0")
     log(result.ok ? "SleepDisabled was left at 1; set it to 0" : `could not clear SleepDisabled: ${result.error}`)
   }
-  if ((await workingSessions())?.working.length) return
+  if ((await workingSessions())?.working.length || claudeCodeIsWorking()) return
   const slept = await run("/bin/sh", ["-c", SLEEP_IF_LID_CLOSED], 30_000)
   if (!slept.ok) log(`could not put the Mac to sleep: ${slept.error}`)
 }
@@ -281,6 +301,7 @@ export default {
     S.instances.add(ctx)
     const controller = new AbortController()
     try {
+      mkdirSync(SHARED_DIR, { recursive: true })
       if (statSync(LOG_FILE, { throwIfNoEntry: false })?.size > 512_000) writeFileSync(LOG_FILE, "")
       if (S.instances.size === 1) {
         adoptPriorHold()

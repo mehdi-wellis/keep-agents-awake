@@ -56,8 +56,8 @@ Click the pill icon, then open **Settings** or **Quick Settings**. Set these:
 | You use | What to do | How it works |
 |---|---|---|
 | **OpenCode** | [Paste this prompt](#for-opencode) | Fully automatic and tested |
-| **Claude Code** | [Paste this prompt](#for-claude-code-codex-and-other-agents) | Your agent sets it up. Not tested by us yet |
-| **Codex** | [Paste this prompt](#for-claude-code-codex-and-other-agents) | Your agent sets it up. Not tested by us yet |
+| **Claude Code** | [Paste this prompt](#for-claude-code) | Fully automatic and tested in the terminal |
+| **Codex** | [Paste this prompt](#for-codex-and-other-agents) | Your agent sets it up. Not tested by us yet |
 | **Anything else** | [Start it by hand](#the-simple-way-works-with-any-agent) | Two clicks each time |
 
 ## Copy and paste prompts
@@ -80,7 +80,28 @@ Don't use sudo and don't change anything else. Tell me in plain words if it work
 
 If your Mac asks whether OpenCode can control Amphetamine, click **Allow**.
 
-### For Claude Code, Codex and other agents
+### For Claude Code
+
+Paste this into Claude Code:
+
+```text
+Please install keep-agents-awake for Claude Code on this Mac.
+
+1. Check that Amphetamine is in /Applications and that the file /etc/sudoers.d/amphetamine_PowerProtect exists. If either is missing, stop and send me to the setup guide: https://github.com/mehdi-wellis/keep-agents-awake
+2. Download https://raw.githubusercontent.com/mehdi-wellis/keep-agents-awake/main/claude-code/keepawake.sh to a temporary folder. Read it and tell me in one sentence what it does.
+3. Run it with: sh <that file> install
+4. Tell me to click Allow if my Mac asks to let it control Amphetamine. The popup can hide behind other windows, and nothing works until I answer it.
+5. Run: sleep 25
+6. Then run: pmset -g | grep SleepDisabled
+   It should show SleepDisabled 1.
+7. Read ~/Library/Logs/claude-amphetamine.log. It should say an Amphetamine session started.
+
+Don't use sudo and don't change anything else. Tell me in plain words if it worked.
+```
+
+This adds a small background check to your Mac, which looks at Claude Code every 10 seconds. It doesn't change your Claude settings. macOS may show a "background item added" notice, which is expected.
+
+### For Codex and other agents
 
 Paste this into your agent:
 
@@ -106,10 +127,7 @@ Follow these rules:
 Don't use sudo. If you need me to approve anything, tell me exactly what to click. When you're done, test that a prompt starts a session and that it ends afterwards. Then tell me in plain words what you did, what you couldn't test, and how to undo it.
 ```
 
-Good to know:
-
-- **Codex** asks you to approve new hooks first. Type `/hooks` and approve them.
-- **Claude Code** will ask to change your settings. That's expected.
+Codex asks you to approve new hooks first. Type `/hooks` and approve them.
 
 ### The simple way (works with any agent)
 
@@ -136,27 +154,30 @@ End the session when you're back, or let the timer run out.
 
 ## Good to know
 
+- **Wait 15 seconds before closing the lid.** Give it a moment to switch on after you send a prompt.
 - **Never put your Mac in a bag while an agent is working.** It stays fully awake and can get hot. Leave it on a desk.
 - **Lock your screen, don't log out.** Locking is fine, but logging out stops your agents.
 - **Plug in for long tasks.** Amphetamine stops at 20% battery if you set it up in Step 3.
-- **Questions pause everything.** With the OpenCode plugin, if your agent asks a question while the lid is closed, your Mac goes to sleep. Open it, answer, and the agent carries on.
+- **Questions pause everything.** With the automatic setup, if your agent asks a question or needs permission while the lid is closed, your Mac goes to sleep. Open it, answer, and the agent carries on.
+- **Built-in keep-awake settings aren't enough.** Claude's **Keep computer awake** and Codex's **Prevent sleep while running** only stop idle sleep. Closing the lid can still put your Mac to sleep.
 - **Your agent needs internet.** Stay on Wi-Fi you trust.
 
 ## How it works
 
 A Mac normally goes to sleep the moment you close the lid. Amphetamine tells it to stay awake instead, and Power Protect keeps that working when your charger is plugged in or removed.
 
-The OpenCode plugin does the switching for you:
+The OpenCode plugin and the Claude Code background check do the switching for you:
 
 | Situation | What happens |
 |---|---|
 | An agent is working | Amphetamine turns on within 15 seconds |
 | An agent asks you a question or needs permission | Amphetamine turns off within about 45 seconds |
 | You answer | Amphetamine turns back on within 15 seconds |
-| All work is finished | Amphetamine turns off within about 45 seconds, and your Mac sleeps if the lid is closed |
+| All work is finished, you press Esc, or Claude Code crashes | Amphetamine turns off within about 45 seconds, and your Mac sleeps if the lid is closed |
+| OpenCode and Claude Code are both working | Amphetamine stays on until both have stopped |
 | Only a background command is left running | Doesn't count, so your Mac can sleep and the command pauses until it wakes |
 | Unplugged at 20% battery or less | Amphetamine turns off straight away |
-| You started a session yourself | The plugin leaves it alone |
+| You started a session yourself | It's left alone |
 
 While an agent is running, a session you end by hand comes back within 15 seconds.
 
@@ -169,8 +190,9 @@ While an agent is running, a session you end by hand comes back within 15 second
 | Mac sleeps after you plug in or unplug | Install Power Protect (Step 2) |
 | Starting a new session breaks it | End the current session first, then start a new one |
 | OpenCode isn't switching Amphetamine on | Ask OpenCode to read `~/Library/Logs/opencode-amphetamine.log` |
+| Claude Code isn't switching Amphetamine on | Look for a hidden permission popup, then ask Claude Code to read `~/Library/Logs/claude-amphetamine.log` |
 
-Amphetamine has a known bug where sleep protection can quietly switch off. The OpenCode plugin fixes this by itself. If you start sessions by hand, run the test above before you leave for anything important.
+Amphetamine has a known bug where sleep protection can quietly switch off. The automatic setups fix this by themselves. If you start sessions by hand, run the test above before you leave for anything important.
 
 ## Using Windows?
 
@@ -179,17 +201,25 @@ Amphetamine is Mac only. Microsoft's free PowerToys app has a similar tool calle
 ## How to remove it
 
 1. **OpenCode plugin:** delete `~/.config/opencode/plugins/amphetamine-keepawake.js`.
-2. **Power Protect:** click the pill icon, then **Feedback & Support**, then **Uninstall Scripts...**
-3. **Amphetamine:** delete it from your Applications folder.
+2. **Claude Code background check:** open Terminal, paste this and press Return:
 
-For Claude Code or Codex, ask your agent to undo the setup.
+   ```sh
+   sh ~/.local/share/keep-agents-awake/keepawake.sh uninstall
+   ```
+
+3. **Power Protect:** click the pill icon, then **Feedback & Support**, then **Uninstall Scripts...**
+4. **Amphetamine:** delete it from your Applications folder.
+
+For Codex, ask your agent to undo the setup.
 
 ## What's been tested
 
-Tested on a MacBook Pro (M5 Pro) with macOS 27.2, Amphetamine 5.3.2 and OpenCode 2.2.5:
+Tested on a MacBook Pro (M5 Pro) with macOS 27.2, Amphetamine 5.3.2, OpenCode 2.2.5 and Claude Code 2.1.317 in the terminal:
 
 - Starting and stopping automatically
 - Turning off while an agent waits for your answer, and back on when you reply
+- Claude Code permission prompts, pressing Esc, and a crash
+- Using OpenCode and Claude Code at the same time
 - Handing over from a session you started yourself
 - Fixing sleep protection when it switches off
 - Closing the lid and locking the screen for short periods, on battery
@@ -201,4 +231,5 @@ Not tested yet:
 - Plugging in or unplugging mid-task
 - The automatic 20% battery cutoff
 - A subagent asking a question or needing permission
-- The prompt for Claude Code, Codex and other agents
+- Claude Code in the desktop app or an editor like VS Code
+- The prompt for Codex and other agents
