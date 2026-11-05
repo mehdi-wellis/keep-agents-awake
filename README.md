@@ -96,9 +96,9 @@ Use your own hooks feature, and read your official docs on hooks first. If you d
 
 Follow these rules:
 1. When I send a prompt, start an Amphetamine session, but only if none is active. Never start one on top of another, because that can break lid-closed mode.
-2. When work stops, wait 3 minutes. If none of your other chats are working, end the session.
+2. When work stops, or you're waiting for my answer or approval, wait 30 seconds. If none of your other chats are working, end the session. Start it again once I reply.
 3. Only end sessions you started. Never end one I started myself.
-4. Handle several chats at once. Only end the session when the last one is done.
+4. Handle several chats at once. Only end the session when none are working.
 5. If the lid is still closed when you end the session, and no external display is connected, put the Mac to sleep with: pmset sleepnow
 6. Don't start a session on battery at 20% or lower.
 7. Write what you do to a log in ~/Library/Logs/.
@@ -139,7 +139,7 @@ End the session when you're back, or let the timer run out.
 - **Never put your Mac in a bag while an agent is working.** It stays fully awake and can get hot. Leave it on a desk.
 - **Lock your screen, don't log out.** Locking is fine, but logging out stops your agents.
 - **Plug in for long tasks.** Amphetamine stops at 20% battery if you set it up in Step 3.
-- **Your agent can still get stuck.** If it asks you a question, it waits for your answer, even with the Mac awake.
+- **Questions pause everything.** With the OpenCode plugin, if your agent asks a question while the lid is closed, your Mac goes to sleep. Open it, answer, and the agent carries on.
 - **Your agent needs internet.** Stay on Wi-Fi you trust.
 
 ## How it works
@@ -151,9 +151,10 @@ The OpenCode plugin does the switching for you:
 | Situation | What happens |
 |---|---|
 | An agent is working | Amphetamine turns on within 15 seconds |
-| A background command is running | Counts as work for its first 2 hours |
-| An agent is waiting for your answer | Counts as work until 30 minutes pass with no activity |
-| All work is finished | Amphetamine turns off after 3 minutes, and your Mac sleeps if the lid is closed |
+| An agent asks you a question or needs permission | Amphetamine turns off within about 45 seconds |
+| You answer | Amphetamine turns back on within 15 seconds |
+| All work is finished | Amphetamine turns off within about 45 seconds, and your Mac sleeps if the lid is closed |
+| Only a background command is left running | Doesn't count, so your Mac can sleep and the command pauses until it wakes |
 | Unplugged at 20% battery or less | Amphetamine turns off straight away |
 | You started a session yourself | The plugin leaves it alone |
 
@@ -188,6 +189,7 @@ For Claude Code or Codex, ask your agent to undo the setup.
 Tested on a MacBook Pro (M5 Pro) with macOS 27.2, Amphetamine 5.3.2 and OpenCode 2.2.5:
 
 - Starting and stopping automatically
+- Turning off while an agent waits for your answer, and back on when you reply
 - Handing over from a session you started yourself
 - Fixing sleep protection when it switches off
 - Closing the lid and locking the screen for short periods, on battery
@@ -198,4 +200,5 @@ Not tested yet:
 - Long runs with the lid closed
 - Plugging in or unplugging mid-task
 - The automatic 20% battery cutoff
+- A subagent asking a question or needing permission
 - The prompt for Claude Code, Codex and other agents

@@ -7,9 +7,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
 const TICK_MS = 15_000
-const GRACE_MS = 3 * 60_000 // Stay awake this long after the last session stops, so turns don't flap the session.
-const WAITING_CAP_MS = 30 * 60_000 // A prompt waiting for you keeps the Mac awake this long at most.
-const BACKGROUND_COMMAND_CAP_MS = 2 * 60 * 60_000 // Beyond this, a background command is probably a dev server.
+const GRACE_MS = 30_000 // Stay awake this long after agents stop, so a brief gap doesn't end the session.
 const MIN_BATTERY_PERCENT = 20
 const SESSION_HOURS = 24 // Amphetamine ends the session itself by then, even if everything here has died.
 const SETTLE_MS = 10_000 // Amphetamine changes SleepDisabled a few seconds after a session starts or ends.
@@ -45,7 +43,6 @@ const S = (globalThis[KEY] ??= {
   owned: false,
   startedAt: 0,
   lastWanted: 0,
-  lastSessionEvent: Date.now(),
   failures: 0,
   lastReason: "",
 })
@@ -91,7 +88,8 @@ async function battery() {
 async function api(path) {
   const result = await run(process.execPath, ["api", "get", path])
   if (!result.ok) throw new Error(result.error)
-  return JSON.parse(result.out).data
+  const body = JSON.parse(result.out)
+  return body.data ?? body
 }
 
 async function activeSessions() {
@@ -106,34 +104,27 @@ async function activeSessions() {
   }
 }
 
-// A session leaves the active list when its turn ends, even if a command it started in the background is still
-// running. The list of running commands is per project, so this asks once for each project with the plugin loaded.
-async function backgroundCommands() {
-  const directories = new Set([...S.instances].map((ctx) => ctx.location?.directory).filter(Boolean))
-  const running = []
-  for (const directory of directories) {
-    const shells = await api(`/api/shell?location%5Bdirectory%5D=${encodeURIComponent(directory)}`).catch(() => [])
-    running.push(
-      ...shells.filter(
-        (shell) => shell.metadata?.sessionID && Date.now() - shell.time.started < BACKGROUND_COMMAND_CAP_MS,
-      ),
-    )
-  }
-  return running
-}
-
-// The active list says "running" even when an agent is only waiting for your reply. So a session counts as stuck
-// when a prompt is pending and no session has produced anything for WAITING_CAP_MS. A long test run has no prompt
-// pending, so it never counts as stuck.
-async function stuckOnPrompt(ids) {
-  if (Date.now() - S.lastSessionEvent < WAITING_CAP_MS) return false
-  for (const id of ids) {
-    for (const path of [`/api/session/${id}/permission`, `/api/session/${id}/form`]) {
-      const pending = await api(path).catch(() => [])
-      if (pending.length) return true
-    }
+async function waitingForYou(id) {
+  for (const path of [`/api/session/${id}/permission`, `/api/session/${id}/form`]) {
+    const pending = await api(path).catch(() => [])
+    if (pending.length) return true
   }
   return false
+}
+
+// The active list says "running" even while an agent is only waiting for your reply, so those sessions are taken out.
+// A parent also says "running" while its subagent waits for you, so it's taken out along with the subagent.
+async function workingSessions() {
+  const active = await activeSessions()
+  if (active === undefined) return undefined
+  const working = new Set(active)
+  for (const id of active) {
+    if (!(await waitingForYou(id))) continue
+    for (let session = id; session; session = (await api(`/api/session/${session}`).catch(() => undefined))?.parentID) {
+      working.delete(session)
+    }
+  }
+  return { active, working: [...working] }
 }
 
 function readHold() {
@@ -238,7 +229,7 @@ async function release(reason) {
     const result = await setSleepDisabled("0")
     log(result.ok ? "SleepDisabled was left at 1; set it to 0" : `could not clear SleepDisabled: ${result.error}`)
   }
-  if ((await activeSessions())?.length || (await backgroundCommands()).length) return
+  if ((await workingSessions())?.working.length) return
   const slept = await run("/bin/sh", ["-c", SLEEP_IF_LID_CLOSED], 30_000)
   if (!slept.ok) log(`could not put the Mac to sleep: ${slept.error}`)
 }
@@ -247,21 +238,19 @@ async function tick() {
   if (S.ticking) return
   S.ticking = true
   try {
-    const active = await activeSessions()
-    if (active === undefined) return
+    const sessions = await workingSessions()
+    if (sessions === undefined) return
 
-    const background = await backgroundCommands()
-    const working = active.length > 0 || background.length > 0
-
-    let reason = working ? "" : "no active sessions"
-    if (working) {
+    let reason = ""
+    if (!sessions.active.length) reason = "no agents running"
+    else if (!sessions.working.length) reason = "agents are waiting for your reply"
+    else {
       const power = await battery()
       if (power.discharging && power.percent <= MIN_BATTERY_PERCENT) reason = `battery at ${power.percent}%`
-      else if (!background.length && (await stuckOnPrompt(active))) reason = "only waiting for your reply"
     }
 
     if (!reason) return await hold()
-    if (working) logOnce(`not keeping the Mac awake: ${reason}`)
+    if (sessions.active.length) logOnce(`not keeping the Mac awake: ${reason}`)
     if (!S.holding) return
     if (reason.startsWith("battery") || Date.now() - S.lastWanted >= GRACE_MS) await release(reason)
   } catch (error) {
@@ -274,12 +263,8 @@ async function tick() {
 function listen(ctx, signal) {
   void (async () => {
     try {
-      for await (const event of ctx.event.subscribe({ signal })) {
-        if (!event.type?.startsWith("session.")) continue
-        S.lastSessionEvent = Date.now()
-        // Start at once, so closing the lid right after sending a prompt is safe.
-        if (event.type === "session.execution.started") void tick()
-      }
+      // Start at once, so closing the lid right after sending a prompt is safe.
+      for await (const _ of ctx.event.subscribe({ signal, types: ["session.execution.started"] })) void tick()
     } catch (error) {
       if (!signal.aborted) log(`event stream stopped: ${error?.message ?? error}`)
     }
