@@ -56,7 +56,8 @@ Click the pill icon, then open **Settings** or **Quick Settings**. Set these:
 | You use | What to do | How it works |
 |---|---|---|
 | **OpenCode** | [Paste this prompt](#for-opencode) | Fully automatic and tested |
-| **Claude Code** | [Paste this prompt](#for-claude-code) | Fully automatic and tested in the terminal |
+| **Claude Code** in the terminal or the Claude app's Code tab | [Paste this prompt](#for-claude-code) | Fully automatic and tested |
+| **Claude app, Chat or Cowork** | See [Using Chat or Cowork?](#using-chat-or-cowork-in-the-claude-app) | Automatic setup can't see these |
 | **Codex** | [Paste this prompt](#for-codex-and-other-agents) | Your agent sets it up. Not tested by us yet |
 | **Anything else** | [Start it by hand](#the-simple-way-works-with-any-agent) | Two clicks each time |
 
@@ -139,6 +140,13 @@ Do this before you walk away:
 
 End the session when you're back, or let the timer run out.
 
+### Using Chat or Cowork in the Claude app?
+
+The automatic setup only sees Claude Code, so Amphetamine won't switch on for these.
+
+- **Normal chats:** you don't need this guide. A chat keeps going without your Mac, even if you close the app.
+- **Tasks using your Mac:** if Claude is working in your folders, your apps or the app's built-in browser, your Mac has to stay awake. [Start Amphetamine by hand](#the-simple-way-works-with-any-agent) first.
+
 ## Test that it works
 
 1. Start a session, or give your agent a task if you set up the automatic version.
@@ -214,11 +222,12 @@ For Codex, ask your agent to undo the setup.
 
 ## What's been tested
 
-Tested on a MacBook Pro (M5 Pro) with macOS 27.2, Amphetamine 5.3.2, OpenCode 2.2.5 and Claude Code 2.1.317 in the terminal:
+Tested on a MacBook Pro (M5 Pro) with macOS 27.2, Amphetamine 5.3.2, OpenCode 2.2.5 and Claude Code 2.1.317:
 
 - Starting and stopping automatically
 - Turning off while an agent waits for your answer, and back on when you reply
-- Claude Code permission prompts, pressing Esc, and a crash
+- Claude Code permission prompts, pressing Esc, and a crash, in the terminal
+- A short task in the Claude app's Code tab
 - Using OpenCode and Claude Code at the same time
 - Handing over from a session you started yourself
 - Fixing sleep protection when it switches off
@@ -231,5 +240,6 @@ Not tested yet:
 - Plugging in or unplugging mid-task
 - The automatic 20% battery cutoff
 - A subagent asking a question or needing permission
-- Claude Code in the desktop app or an editor like VS Code
+- Claude Code in an editor like VS Code
+- Long tasks in the Claude app's Code tab
 - The prompt for Codex and other agents
