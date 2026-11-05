@@ -123,7 +123,8 @@ Follow these rules:
 4. Handle several chats at once. Only end the session when none are working.
 5. If the lid is still closed when you end the session, and no external display is connected, put the Mac to sleep with: pmset sleepnow
 6. Don't start a session on battery at 20% or lower.
-7. Write what you do to a log in ~/Library/Logs/.
+7. Count a command you started in the background as work, for up to 2 hours.
+8. Write what you do to a log in ~/Library/Logs/.
 
 Don't use sudo. If you need me to approve anything, tell me exactly what to click. When you're done, test that a prompt starts a session and that it ends afterwards. Then tell me in plain words what you did, what you couldn't test, and how to undo it.
 ```
@@ -166,7 +167,8 @@ The automatic setup only sees Claude Code, so Amphetamine won't switch on for th
 - **Never put your Mac in a bag while an agent is working.** It stays fully awake and can get hot. Leave it on a desk.
 - **Lock your screen, don't log out.** Locking is fine, but logging out stops your agents.
 - **Plug in for long tasks.** Amphetamine stops at 20% battery if you set it up in Step 3.
-- **Questions pause everything.** With the automatic setup, if your agent asks a question or needs permission while the lid is closed, your Mac goes to sleep. Open it, answer, and the agent carries on.
+- **Questions pause everything.** With the automatic setup, if your agent asks a question or needs permission while the lid is closed, your Mac goes to sleep once any background commands finish. Open it, answer, and the agent carries on.
+- **Forgotten servers can keep your Mac awake.** A dev server left running in the background counts as work for up to 2 hours.
 - **Built-in keep-awake settings aren't enough.** Claude's **Keep computer awake** and Codex's **Prevent sleep while running** only stop idle sleep. Closing the lid can still put your Mac to sleep.
 - **Your agent needs internet.** Stay on Wi-Fi you trust.
 
@@ -179,11 +181,11 @@ The OpenCode plugin and the Claude Code background check do the switching for yo
 | Situation | What happens |
 |---|---|
 | An agent is working | Amphetamine turns on within 15 seconds |
-| An agent asks you a question or needs permission | Amphetamine turns off within about 45 seconds |
+| An agent asks you a question or needs permission | Amphetamine turns off within about 45 seconds, unless a background command is still running |
 | You answer | Amphetamine turns back on within 15 seconds |
 | All work is finished, you press Esc, or Claude Code crashes | Amphetamine turns off within about 45 seconds, and your Mac sleeps if the lid is closed |
 | OpenCode and Claude Code are both working | Amphetamine stays on until both have stopped |
-| Only a background command is left running | Doesn't count, so your Mac can sleep and the command pauses until it wakes |
+| A background command is running, like a long build or test | Counts as work for its first 2 hours, so it finishes with the lid closed |
 | Unplugged at 20% battery or less | Amphetamine turns off straight away |
 | You started a session yourself | It's left alone |
 
@@ -227,7 +229,8 @@ Tested on a MacBook Pro (M5 Pro) with macOS 27.2, Amphetamine 5.3.2, OpenCode 2.
 - Starting and stopping automatically
 - Turning off while an agent waits for your answer, and back on when you reply
 - Claude Code permission prompts, pressing Esc, and a crash, in the terminal
-- A short task in the Claude app's Code tab
+- A 2-minute background command in the Claude app's Code tab, with the lid closed. The Mac stayed awake until it finished, then went to sleep by itself
+- Keeping Amphetamine on for a background command while OpenCode waits for your answer
 - Using OpenCode and Claude Code at the same time
 - Handing over from a session you started yourself
 - Fixing sleep protection when it switches off
@@ -235,12 +238,10 @@ Tested on a MacBook Pro (M5 Pro) with macOS 27.2, Amphetamine 5.3.2, OpenCode 2.
 
 Not tested yet:
 
-- The Mac going to sleep when work ends with the lid closed
-- Long runs with the lid closed
+- Runs longer than a few minutes with the lid closed
 - Plugging in or unplugging mid-task
 - The automatic 20% battery cutoff
 - A subagent asking a question or needing permission
 - Claude Code in an editor like VS Code
-- Long tasks in the Claude app's Code tab
 - Cowork in the Claude app, so start Amphetamine by hand to be safe
 - The prompt for Codex and other agents

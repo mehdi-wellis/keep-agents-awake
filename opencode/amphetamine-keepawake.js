@@ -8,6 +8,7 @@ import { dirname, join } from "node:path"
 
 const TICK_MS = 15_000
 const GRACE_MS = 30_000 // Stay awake this long after agents stop, so a brief gap doesn't end the session.
+const BACKGROUND_COMMAND_CAP_MS = 2 * 60 * 60_000 // Beyond this, a background command is probably a dev server.
 const MIN_BATTERY_PERCENT = 20
 const SESSION_HOURS = 24 // Amphetamine ends the session itself by then, even if everything here has died.
 const SETTLE_MS = 10_000 // Amphetamine changes SleepDisabled a few seconds after a session starts or ends.
@@ -113,6 +114,22 @@ async function activeSessions() {
     if (S.failures === 1) log(`could not list active sessions: ${error?.message ?? error}`)
     return S.failures >= MAX_API_FAILURES ? [] : undefined
   }
+}
+
+// A session leaves the active list when its turn ends, even if a command it started in the background is still
+// running. The list of running commands is per project, so this asks once for each project with the plugin loaded.
+async function backgroundCommands() {
+  const directories = new Set([...S.instances].map((ctx) => ctx.location?.directory).filter(Boolean))
+  const running = []
+  for (const directory of directories) {
+    const shells = await api(`/api/shell?location%5Bdirectory%5D=${encodeURIComponent(directory)}`).catch(() => [])
+    running.push(
+      ...shells.filter(
+        (shell) => shell.metadata?.sessionID && Date.now() - shell.time.started < BACKGROUND_COMMAND_CAP_MS,
+      ),
+    )
+  }
+  return running
 }
 
 async function waitingForYou(id) {
@@ -249,7 +266,8 @@ async function release(reason) {
     const result = await setSleepDisabled("0")
     log(result.ok ? "SleepDisabled was left at 1; set it to 0" : `could not clear SleepDisabled: ${result.error}`)
   }
-  if ((await workingSessions())?.working.length || claudeCodeIsWorking()) return
+  if ((await workingSessions())?.working.length || (await backgroundCommands()).length) return
+  if (claudeCodeIsWorking()) return
   const slept = await run("/bin/sh", ["-c", SLEEP_IF_LID_CLOSED], 30_000)
   if (!slept.ok) log(`could not put the Mac to sleep: ${slept.error}`)
 }
@@ -260,17 +278,18 @@ async function tick() {
   try {
     const sessions = await workingSessions()
     if (sessions === undefined) return
+    const background = await backgroundCommands()
 
     let reason = ""
-    if (!sessions.active.length) reason = "no agents running"
-    else if (!sessions.working.length) reason = "agents are waiting for your reply"
+    if (!sessions.active.length && !background.length) reason = "no agents running"
+    else if (!sessions.working.length && !background.length) reason = "agents are waiting for your reply"
     else {
       const power = await battery()
       if (power.discharging && power.percent <= MIN_BATTERY_PERCENT) reason = `battery at ${power.percent}%`
     }
 
     if (!reason) return await hold()
-    if (sessions.active.length) logOnce(`not keeping the Mac awake: ${reason}`)
+    if (sessions.active.length || background.length) logOnce(`not keeping the Mac awake: ${reason}`)
     if (!S.holding) return
     if (reason.startsWith("battery") || Date.now() - S.lastWanted >= GRACE_MS) await release(reason)
   } catch (error) {

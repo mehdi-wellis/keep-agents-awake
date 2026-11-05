@@ -9,6 +9,7 @@
 # Log: ~/Library/Logs/claude-amphetamine.log
 
 GRACE_SECONDS=30 # Stay awake this long after Claude Code stops, so a brief gap doesn't end the session.
+BACKGROUND_COMMAND_CAP_SECONDS=${BACKGROUND_COMMAND_CAP_SECONDS:-7200} # Beyond this, it's probably a dev server.
 MIN_BATTERY_PERCENT=20
 SESSION_HOURS=24 # Amphetamine ends the session itself by then, even if everything here has died.
 OTHER_AGENT_FRESH_SECONDS=60
@@ -45,21 +46,37 @@ is_fresh() {
   [ -f "$1" ] && [ $(($(date +%s) - $(/usr/bin/stat -f %m "$1"))) -lt "$2" ]
 }
 
-# Prints the process ID of each Claude Code session that's generating or running a tool. `claude agents --json` reports
-# "busy" for those, "waiting" on a question or permission prompt, and "idle" when finished or after Esc.
+# A session reports "idle" once its turn ends, even if a command it started in the background is still running.
+# Claude Code runs each command as a direct child process that loads a snapshot of your shell, so that's what this looks
+# for. It's an internal detail: if it ever changes, background commands simply stop counting.
+has_recent_command() {
+  /bin/ps -axww -o ppid=,etime=,command= | /usr/bin/awk -v session="$1" -v cap="$BACKGROUND_COMMAND_CAP_SECONDS" '
+    $1 == session && /shell-snapshots\/snapshot-/ {
+      # etime looks like mm:ss, hh:mm:ss or dd-hh:mm:ss.
+      n = split($2, t, /[-:]/)
+      age = t[n] + t[n - 1] * 60 + (n >= 3 ? t[n - 2] * 3600 : 0) + (n == 4 ? t[1] * 86400 : 0)
+      if (age < cap) found = 1
+    }
+    END { exit !found }
+  '
+}
+
+# Prints the process ID of each Claude Code session that's working. `claude agents --json` reports "busy" while it's
+# generating or running a tool, "waiting" on a question or permission prompt, and "idle" when finished or after Esc.
 # OpenCode runs Claude Code internally and has its own plugin, so its sessions are skipped.
-busy_sessions() {
-  pids=$("${CLAUDE_BIN:-claude}" agents --json 2>/dev/null | /usr/bin/perl -MJSON::PP -e '
+working_sessions() {
+  sessions=$("${CLAUDE_BIN:-claude}" agents --json 2>/dev/null | /usr/bin/perl -MJSON::PP -e '
     local $/;
     my $sessions = decode_json(<STDIN>);
-    print "$_->{pid}\n" for grep { ($_->{status} // "") eq "busy" } @$sessions;
+    print "$_->{pid} ", ($_->{status} // "none"), "\n" for @$sessions;
   ') || return 1
-  for pid in $pids; do
+  echo "$sessions" | while read -r pid status; do
+    [ -n "$pid" ] || continue
     parent=$(/bin/ps -o ppid= -p "$pid" | /usr/bin/tr -d ' ')
     case "$(/bin/ps -o comm= -p "${parent:-0}")" in
-      *opencode*) ;;
-      *) echo "$pid" ;;
+      *opencode*) continue ;;
     esac
+    if [ "$status" = busy ] || has_recent_command "$pid"; then echo "$pid"; fi
   done
 }
 
@@ -142,7 +159,7 @@ let_go() {
   if sleep_disabled; then
     set_sleep_disabled 0 && log "SleepDisabled was left at 1; set it to 0"
   fi
-  [ -n "$(busy_sessions)" ] && return
+  [ -n "$(working_sessions)" ] && return
   is_fresh "$OPENCODE_WORKING_FILE" "$OTHER_AGENT_FRESH_SECONDS" && return
   sleep_if_lid_closed
 }
@@ -158,9 +175,9 @@ run_once() {
   fi
 
   # If Claude Code can't be asked, change nothing this round.
-  busy=$(busy_sessions) || exit 0
+  working=$(working_sessions) || exit 0
 
-  if [ -z "$busy" ]; then
+  if [ -z "$working" ]; then
     let_go "$GRACE_SECONDS" "not working"
   elif battery_is_low; then
     let_go 0 "low battery"
