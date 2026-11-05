@@ -145,7 +145,7 @@ End the session when you're back, or let the timer run out.
 
 The automatic setup watches Claude Code, so don't count on Amphetamine switching on for these. It doesn't for Chat, and we haven't tested Cowork.
 
-- **Normal chats:** you don't need this guide. A chat keeps going without your Mac, even if you close the app.
+- **Normal chats:** you don't need this guide. A chat keeps going without your Mac, even when it's asleep, and your reply is there when you open the lid.
 - **Tasks using your Mac:** if Claude is working in your folders, your apps or the app's built-in browser, your Mac has to stay awake. [Start Amphetamine by hand](#the-simple-way-works-with-any-agent) first.
 
 ## Test that it works
@@ -231,6 +231,7 @@ Tested on a MacBook Pro (M5 Pro) with macOS 27.2, Amphetamine 5.3.2, OpenCode 2.
 - Claude Code permission prompts, pressing Esc, and a crash, in the terminal
 - A 2-minute background command in the Claude app's Code tab, with the lid closed. The Mac stayed awake until it finished, then went to sleep by itself
 - Keeping Amphetamine on for a background command while OpenCode waits for your answer
+- A long reply in the Claude app's Chat tab with the lid closed. The Mac went to sleep and the reply still finished
 - Using OpenCode and Claude Code at the same time
 - Handing over from a session you started yourself
 - Fixing sleep protection when it switches off
