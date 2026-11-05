@@ -242,4 +242,5 @@ Not tested yet:
 - A subagent asking a question or needing permission
 - Claude Code in an editor like VS Code
 - Long tasks in the Claude app's Code tab
+- Cowork in the Claude app, so start Amphetamine by hand to be safe
 - The prompt for Codex and other agents
