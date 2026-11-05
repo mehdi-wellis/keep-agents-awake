@@ -143,7 +143,7 @@ End the session when you're back, or let the timer run out.
 
 ### Using Chat or Cowork in the Claude app?
 
-The automatic setup only sees Claude Code, so Amphetamine won't switch on for these.
+The automatic setup watches Claude Code, so don't count on Amphetamine switching on for these. It doesn't for Chat, and we haven't tested Cowork.
 
 - **Normal chats:** you don't need this guide. A chat keeps going without your Mac, even if you close the app.
 - **Tasks using your Mac:** if Claude is working in your folders, your apps or the app's built-in browser, your Mac has to stay awake. [Start Amphetamine by hand](#the-simple-way-works-with-any-agent) first.
