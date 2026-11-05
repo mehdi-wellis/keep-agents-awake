@@ -70,8 +70,8 @@ Paste this into OpenCode:
 ```text
 Please install the keep-agents-awake plugin for OpenCode on this Mac.
 
-1. Check that Amphetamine is in /Applications and that the file /etc/sudoers.d/amphetamine_PowerProtect exists. If either is missing, stop and send me to the setup guide: https://github.com/mehdi-wellis/keep-agents-awake
-2. Download https://raw.githubusercontent.com/mehdi-wellis/keep-agents-awake/main/opencode/amphetamine-keepawake.js and save it as ~/.config/opencode/plugins/amphetamine-keepawake.js. Create the folder if needed.
+1. Check that Amphetamine is in /Applications and that the file /etc/sudoers.d/amphetamine_PowerProtect exists. If either is missing, stop and send me to the setup guide: https://github.com/mimhji/keep-agents-awake
+2. Download https://raw.githubusercontent.com/mimhji/keep-agents-awake/main/opencode/amphetamine-keepawake.js and save it as ~/.config/opencode/plugins/amphetamine-keepawake.js. Create the folder if needed.
 3. Wait 30 seconds, then read ~/Library/Logs/opencode-amphetamine.log. It should say the plugin loaded and that an Amphetamine session started.
 4. Run: pmset -g | grep SleepDisabled
    It should show SleepDisabled 1.
@@ -88,8 +88,8 @@ Paste this into Claude Code:
 ```text
 Please install keep-agents-awake for Claude Code on this Mac.
 
-1. Check that Amphetamine is in /Applications and that the file /etc/sudoers.d/amphetamine_PowerProtect exists. If either is missing, stop and send me to the setup guide: https://github.com/mehdi-wellis/keep-agents-awake
-2. Download https://raw.githubusercontent.com/mehdi-wellis/keep-agents-awake/main/claude-code/keepawake.sh to a temporary folder. Read it and tell me in one sentence what it does.
+1. Check that Amphetamine is in /Applications and that the file /etc/sudoers.d/amphetamine_PowerProtect exists. If either is missing, stop and send me to the setup guide: https://github.com/mimhji/keep-agents-awake
+2. Download https://raw.githubusercontent.com/mimhji/keep-agents-awake/main/claude-code/keepawake.sh to a temporary folder. Read it and tell me in one sentence what it does.
 3. Run it with: sh <that file> install
 4. Tell me to click Allow if my Mac asks to let it control Amphetamine. The popup can hide behind other windows, and nothing works until I answer it.
 5. Run: sleep 25
